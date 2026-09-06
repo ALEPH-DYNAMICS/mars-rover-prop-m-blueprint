@@ -103,6 +103,21 @@ class MetricsTests(unittest.TestCase):
                         metrics.main()
                     self.assertEqual(exit.exception.code, 1)
 
+    def test_phase_transition_publications_can_share_a_clock_stamp(self):
+        samples = {
+            metrics.TOPIC_CMD: [metrics.BagSample(t, NS(linear=NS(x=1.), angular=NS(z=0.))) for t in (0, 3)],
+            metrics.TOPIC_ODOM: [odom(0, 0), odom(1, 1), odom(2, 1), odom(3, 2)],
+            metrics.TOPIC_STATE: [state(0, "DRIVE"), state(1, "DRIVE"), state(1, "STOP_MEASURE"),
+                                  state(2, "STOP_MEASURE"), state(2, "DRIVE"), state(3, "DONE")],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp); (p / "run_metadata.json").write_text(json.dumps(metadata()))
+            (p / "run.mcap").write_bytes(b"SYNTHETIC; parsing replaced by unit samples")
+            with patch.object(metrics, "try_import_rosbag", return_value=(True, "")), patch.object(metrics, "load_mcap_samples", return_value=(samples, [])):
+                result = json.loads(metrics.evaluate(p).read_text())
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(result["mission"]["stop_measure_max_drift_m"], 0)
+
 
 class DatasetTests(unittest.TestCase):
     def test_schema_rejects_invalid_nested_fields_and_nonfinite(self):

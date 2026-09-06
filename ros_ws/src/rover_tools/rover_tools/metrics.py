@@ -386,8 +386,8 @@ def evaluate(dataset_dir: Path, *, out_path: Optional[Path] = None, strict: bool
                 fields += [float(sample.msg.linear.x), float(sample.msg.angular.z)]
             elif topic == TOPIC_ODOM:
                 fields += [float(sample.msg.pose.pose.position.x), float(sample.msg.pose.pose.position.y)]
-            if not all(math.isfinite(value) for value in fields) or sample.t <= last:
-                raise ValueError(f"Nonfinite or non-increasing samples: {topic}")
+            if not all(math.isfinite(value) for value in fields) or sample.t < last:
+                raise ValueError(f"Nonfinite or decreasing samples: {topic}")
             last = sample.t
         if len(values) < 2:
             metrics["status"] = "partial"

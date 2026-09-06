@@ -7,7 +7,7 @@ This repository currently contains:
 - Control and ros2_control configuration
 - State-estimation bringup
 - Navigation configuration for a modern mode
-- Deterministic mission-cycle execution aligned to authored BT phases
+- ROS-clock mission phase-label publication (no drive/measure/transmit actions)
 - Gazebo simulation assets
 - Dataset and metrics tooling
 - Core CI for the non-Gazebo workspace
@@ -21,7 +21,7 @@ Drive -> Stop -> Measure -> Transmit -> Repeat.
 
 This project preserves that deterministic philosophy while enabling modern autonomy extensions.
 
-Two operational modes:
+Two intended mode profiles (the capabilities below are conceptual unless verified):
 
 1. **PROP-M Mode**
    - Tether-limited radius (~15 m)
@@ -42,7 +42,7 @@ Two operational modes:
 ROS 2 workspace (`ros_ws/`):
 
 - `rover_description` -> Robot model, inertials, transmissions
-- `rover_control` -> Wheel controllers, ros2_control configs
+- `rover_control` -> Simulation command shaping; drive-controller wiring is incomplete
 - `rover_estimation` -> Odometry + state fusion
 - `rover_navigation` -> Nav2 configuration
 - `rover_mission_bt` -> Mission-cycle runner and authored mission trees
@@ -51,16 +51,16 @@ ROS 2 workspace (`ros_ws/`):
 
 ---
 
-## Verified Today
+## Verification boundary
 
-The strongest current evidence in this repository is:
+The bounded correctness pass adds pure-Python regressions for control shaping,
+metrics, schema validation and packaging. It provides a separate simulator smoke
+command that requires observed `/clock`, `/mission/state` and `/cmd_vel_safe` messages.
+A successful core package build does not establish a running simulator.
 
-- the core ROS 2 workspace builds in CI on Humble
-- the control, estimation, navigation, mission, and tooling packages integrate as one buildable stack
-- simulation launch assets and scenarios exist in-tree for heavier local or dedicated simulation use
-- dataset and metrics conventions are defined and versioned in the repo
-
-This is meaningful, but it is not the same thing as a validated hardware rover or a fully proven simulation program.
+The full ROS/Gazebo runtime was not available in the repair environment. Controller
+plugin/spawner wiring, `/cmd_vel_safe` actuation, odometry and mission actions remain
+unverified/incomplete. See [the exact executable subset and checks](docs/correctness-and-runtime.md).
 
 ---
 
@@ -68,17 +68,17 @@ This is meaningful, but it is not the same thing as a validated hardware rover o
 
 This is an early engineering repository, not a finished flight or field stack.
 
-- The control/estimation/navigation path is the strongest implemented surface.
+- Control shaping has software regressions; estimation/navigation runtime integration remains unverified.
 - Generic CI validates the core workspace on ROS 2 Humble without the Gazebo package set.
-- Simulation bringup is present, but it is a heavier optional path and not the surface validated by generic CI.
-- Mission execution currently uses a deterministic scheduler aligned to the BT phase model; it is not yet a full runtime tree executor.
+- Simulation bringup is present; the separate integration workflow must be assessed by its actual result.
+- The mission runner publishes phase labels on the ROS clock. It neither executes the XML tree nor performs drive, measure or transmit actions.
 - The hardware bringup path is an explicit placeholder until a validated driver stack exists.
 - Dynamics, inertials, and terramechanics parameters still include first-pass estimates pending calibration.
 - Reproducibility depends on a ROS 2 / Gazebo environment with the declared package set available.
 
 ## What CI Proves
 
-The `build-and-test (humble)` workflow is intended to prove one narrow thing well:
+The `core-build (humble)` workflow is intended to prove one narrow thing well:
 
 - the core ROS 2 workspace installs dependencies, builds, and reaches test-result reporting cleanly on Ubuntu 22.04 / ROS 2 Humble
 
@@ -93,29 +93,18 @@ That boundary is intentional. The repository is stronger when CI claims less and
 
 ## Quickstart (Simulation)
 
-### 1. Build container
+From the repository root, with Docker Engine and Compose available:
+
 ```bash
-docker compose build
+docker compose -f infrastructure/docker/docker-compose.yml config --quiet
+docker compose -f infrastructure/docker/docker-compose.yml run --build --rm ci
 ```
 
-
-### 2. Launch flat Mars scenario
-```bash
-docker compose up sim
-```
-
-
-### 3. Send velocity command
-```bash
-ros2 topic pub /cmd_vel geometry_msgs/msg/Twist ...
-```
-
-
-### 4. Record dataset
-```bash
-ros2 bag record -s mcap --all
-```
-
+The `ci` service builds the ROS workspace and runs the clock/node-topic smoke test.
+It returns failure when required observations are absent; a timeout is not success.
+This command has no privileged hardware access. A local Docker/ROS runtime is
+required; configuration validation alone is not evidence of simulation execution.
+Actual rover motion is outside the currently verified subset.
 
 ---
 
@@ -140,8 +129,11 @@ The intended run artifact set is:
 - run_metadata.json
 - metrics.json
 
-Packaged runs are schema-validated.
-Regression thresholds are enforced when the corresponding evaluation pipeline is executed successfully.
+The packaging entry points validate the full installed JSON Schema before
+publishing an output directory. The explicit `--gate --thresholds` evaluator
+rejects partial evidence and missing/failed bounds. Existing scenario YAMLs have
+no quantitative thresholds: acceptance remains unconfigured until justified
+values are supplied. Exploratory metrics are not an acceptance pass.
 
 ---
 

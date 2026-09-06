@@ -1,4 +1,4 @@
-name: Simulation Regression
+name: Simulator evidence and acceptance (integration pending)
 
 on:
   pull_request:
@@ -15,6 +15,7 @@ concurrency:
 jobs:
   sim-regression:
     runs-on: ubuntu-22.04
+    container: ros:humble-ros-base-jammy
 
     strategy:
       fail-fast: false
@@ -26,7 +27,7 @@ jobs:
       ROS_DISTRO: ${{ matrix.ros_distro }}
       ROS_WS: ros_ws
       SCENARIO: ${{ matrix.scenario }}
-      # determinism for regression
+      # Requested Gazebo seed; not proof of repeatability
       SEED: "42"
       RUN_SECONDS: "45"
 
@@ -34,20 +35,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup ROS 2
-        uses: ros-tooling/setup-ros@v0.7
-        with:
-          required-ros-distributions: ${{ matrix.ros_distro }}
-
       - name: Install system dependencies (ROS + tools)
         shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          apt-get update
+          apt-get install -y --no-install-recommends \
             python3-pip python3-venv python3-rosdep \
             python3-colcon-common-extensions \
             python3-vcstool \
-            xvfb \
+            libunwind-dev \
+            ros-${ROS_DISTRO}-gazebo-ros-pkgs \
             ros-${ROS_DISTRO}-ros-base \
             ros-${ROS_DISTRO}-rosbag2 \
             ros-${ROS_DISTRO}-rosbag2-storage-mcap \
@@ -59,7 +56,7 @@ jobs:
       - name: Init rosdep
         shell: bash
         run: |
-          sudo rosdep init || true
+          if [ ! -f /etc/ros/rosdep/sources.list.d/20-default.list ]; then rosdep init; fi
           rosdep update
 
       - name: Resolve ROS dependencies (rosdep)
@@ -67,6 +64,9 @@ jobs:
         run: |
           cd "${ROS_WS}"
           rosdep install --from-paths src --ignore-src -r -y
+
+      - name: Install supported schema validator
+        run: python3 -m pip install -r requirements-test.txt
 
       - name: Build workspace
         shell: bash
@@ -84,31 +84,31 @@ jobs:
           test -f "scripts/evaluate_metrics.py" || (echo "Missing scripts/evaluate_metrics.py (required)" && exit 1)
           test -f "datasets/schemas/run_metadata.schema.json" || (echo "Missing datasets/schemas/run_metadata.schema.json (required)" && exit 1)
 
-      - name: Run scenario (headless)
+      - name: Simulator clock and node-topic smoke (no motion claim)
         shell: bash
         run: |
-          set -e
           source /opt/ros/${ROS_DISTRO}/setup.bash
-          cd "${ROS_WS}"
-          source install/setup.bash
-          cd ..
-          # Headless: use xvfb to prevent GUI requirements
-          xvfb-run -a python3 scripts/run_sim_batch.py \
-            --backend gazebo \
-            --scenario "${SCENARIO}" \
-            --seed "${SEED}" \
-            --duration "${RUN_SECONDS}" \
-            --output_dir "datasets"
+          source ros_ws/install/setup.bash
+          export GAZEBO_MODEL_PATH="$PWD/ros_ws/src/rover_sim_gazebo/models:${GAZEBO_MODEL_PATH:-}"
+          export GAZEBO_PLUGIN_PATH="$PWD/ros_ws/install/rover_sim_gazebo/lib:${GAZEBO_PLUGIN_PATH:-}"
+          python3 scripts/sim_smoke.py --out analysis/sim-smoke.json
 
-      - name: Evaluate metrics (gate)
+      - name: Record exploratory scenario evidence
         shell: bash
         run: |
-          set -e
-          python3 scripts/evaluate_metrics.py \
-            --dataset_root "datasets" \
-            --scenario "${SCENARIO}" \
-            --seed "${SEED}" \
-            --thresholds "scenarios/${SCENARIO}/scenario.yaml"
+          source /opt/ros/${ROS_DISTRO}/setup.bash
+          source ros_ws/install/setup.bash
+          export GAZEBO_MODEL_PATH="$PWD/ros_ws/src/rover_sim_gazebo/models:${GAZEBO_MODEL_PATH:-}"
+          export GAZEBO_PLUGIN_PATH="$PWD/ros_ws/install/rover_sim_gazebo/lib:${GAZEBO_PLUGIN_PATH:-}"
+          python3 scripts/run_sim_batch.py --backend gazebo --scenario "${SCENARIO}" \
+            --seed "${SEED}" --duration "${RUN_SECONDS}" --runs 1 --no-nav2 --report analysis/regression-batch.json
+
+      - name: Evaluate explicit acceptance (fails when evidence or thresholds are missing)
+        shell: bash
+        run: |
+          source /opt/ros/${ROS_DISTRO}/setup.bash
+          source ros_ws/install/setup.bash
+          python3 scripts/gate_batch.py analysis/regression-batch.json --thresholds "scenarios/${SCENARIO}/scenario.yaml"
 
       - name: Upload regression artifacts
         if: always()
@@ -117,5 +117,6 @@ jobs:
           name: sim-regression-${{ matrix.ros_distro }}-${{ matrix.scenario }}
           path: |
             datasets/**
+            analysis/**
             ros_ws/log/**
           if-no-files-found: ignore

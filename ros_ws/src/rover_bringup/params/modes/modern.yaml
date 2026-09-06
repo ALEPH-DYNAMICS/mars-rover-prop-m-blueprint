@@ -6,5 +6,7 @@
       tether_enabled: false
 
     limits:
-      v_max_mps: 0.20
-      omega_max_rps: 0.60
+      v_max_mps:
+        modern: 0.20
+      omega_max_rps:
+        modern: 0.60

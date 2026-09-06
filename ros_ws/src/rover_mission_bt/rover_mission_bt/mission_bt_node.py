@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import os
-import time
+import math
 from pathlib import Path
 
 import rclpy
@@ -12,7 +11,7 @@ from std_msgs.msg import String
 
 class RoverMissionBTNode(Node):
     """
-    Deterministic mission-cycle runner aligned to authored BT assets.
+    ROS-clock phase-label runner aligned to authored BT assets.
 
     Current behavior:
       - Loads and validates a BT XML file path for mission traceability
@@ -49,22 +48,29 @@ class RoverMissionBTNode(Node):
         self.pub_state = self.create_publisher(String, "/mission/state", qos)
 
         self._phase = "DRIVE"
-        self._phase_started = time.monotonic()
+        self._phase_started = self.get_clock().now().nanoseconds * 1e-9
 
         rate = float(self.get_parameter("tick_rate_hz").value)
+        if not math.isfinite(rate) or rate <= 0:
+            raise ValueError("tick_rate_hz must be finite and positive")
+        self._durations()
         self.timer = self.create_timer(1.0 / rate, self._tick)
 
         self._log_startup()
 
     def _mode(self) -> str:
         m = str(self.get_parameter("mode").value).strip().lower()
-        return "prop_m" if m in ("prop_m", "prop-m", "prop") else "modern"
+        if m not in ("modern", "prop_m"):
+            raise ValueError("mode must be modern or prop_m")
+        return m
 
     def _durations(self) -> tuple[float, float, float]:
         m = self._mode()
         d_drive = float(self.get_parameter(f"drive_duration_s.{m}").value)
         d_meas = float(self.get_parameter(f"measure_duration_s.{m}").value)
         d_tx = float(self.get_parameter(f"transmit_duration_s.{m}").value)
+        if not all(math.isfinite(d) and d > 0 for d in (d_drive, d_meas, d_tx)):
+            raise ValueError("phase durations must be finite and positive")
         return d_drive, d_meas, d_tx
 
     def _log_startup(self) -> None:
@@ -74,12 +80,12 @@ class RoverMissionBTNode(Node):
             tree_path = Path(tree_file)
             status = "present" if tree_path.exists() else "missing"
             self.get_logger().info(
-                f"mission_bt mode={mode} execution_model=deterministic_phase_runner "
+                f"mission_bt mode={mode} execution_model=ros_clock_phase_labels "
                 f"tree_file={tree_file} tree_status={status}"
             )
         else:
             self.get_logger().info(
-                f"mission_bt mode={mode} execution_model=deterministic_phase_runner "
+                f"mission_bt mode={mode} execution_model=ros_clock_phase_labels "
                 "tree_file=(not set)"
             )
 
@@ -90,14 +96,18 @@ class RoverMissionBTNode(Node):
 
     def _advance(self, next_phase: str) -> None:
         self._phase = next_phase
-        self._phase_started = time.monotonic()
+        self._phase_started = self.get_clock().now().nanoseconds * 1e-9
         self._publish_state()
 
     def _tick(self) -> None:
         self._publish_state()
 
         d_drive, d_meas, d_tx = self._durations()
-        elapsed = time.monotonic() - self._phase_started
+        elapsed = self.get_clock().now().nanoseconds * 1e-9 - self._phase_started
+
+        if elapsed < 0:
+            self._advance("STOP_MEASURE")
+            return
 
         if self._phase == "DRIVE":
             if elapsed >= d_drive:

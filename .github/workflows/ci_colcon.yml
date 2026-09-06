@@ -1,4 +1,4 @@
-name: CI (colcon)
+name: Core ROS package build (no simulator runtime)
 
 on:
   push:
@@ -12,8 +12,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-and-test:
+  core-build:
     runs-on: ubuntu-22.04
+    container: ros:humble-ros-base-jammy
 
     strategy:
       fail-fast: false
@@ -30,16 +31,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Setup ROS 2
-        uses: ros-tooling/setup-ros@0.7.15
-        with:
-          required-ros-distributions: ${{ matrix.ros_distro }}
-
       - name: Install system dependencies
         shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            libunwind-dev \
             python3-pip \
             python3-rosdep \
             python3-colcon-common-extensions \
@@ -49,7 +46,7 @@ jobs:
       - name: Init rosdep
         shell: bash
         run: |
-          sudo rosdep init || true
+          if [ ! -f /etc/ros/rosdep/sources.list.d/20-default.list ]; then rosdep init; fi
           rosdep update
 
       - name: Resolve ROS dependencies (rosdep)
@@ -60,7 +57,11 @@ jobs:
             --dependency-types=buildtool \
             --dependency-types=build \
             --dependency-types=build_export \
-            --dependency-types=test
+            --dependency-types=test \
+            --dependency-types=exec
+
+      - name: Install supported schema validator
+        run: python3 -m pip install -r requirements-test.txt
 
       - name: Build
         shell: bash
@@ -115,7 +116,7 @@ jobs:
             exit 0
           fi
           cd "${ROS_WS}"
-          colcon test-result --verbose || true
+          colcon test-result --verbose
 
       - name: Upload test logs
         if: always()

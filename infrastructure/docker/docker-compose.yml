@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   dev:
     build:
@@ -8,11 +6,10 @@ services:
     image: mars-rover-prop-m:dev
     network_mode: host
     ipc: host
-    privileged: true
     environment:
       - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}
       - RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
-      - DISPLAY=${DISPLAY}
+      - DISPLAY=${DISPLAY:-}
     volumes:
       - ../..:/workspaces/mars-rover-prop-m-blueprint:rw
       - /tmp/.X11-unix:/tmp/.X11-unix
@@ -30,7 +27,7 @@ services:
     volumes:
       - ../..:/workspaces/mars-rover-prop-m-blueprint:rw
     working_dir: /workspaces/mars-rover-prop-m-blueprint
-    command: bash -lc "infrastructure/docker/scripts/build_ws.sh && infrastructure/docker/scripts/run_sim_smoke.sh"
+    command: bash -lc "bash infrastructure/docker/scripts/build_ws.sh && bash infrastructure/docker/scripts/run_sim_smoke.sh"
 
   runtime:
     build:
@@ -39,7 +36,6 @@ services:
     image: mars-rover-prop-m:runtime
     network_mode: host
     ipc: host
-    privileged: true
     environment:
       - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}
       - RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}

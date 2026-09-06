@@ -112,8 +112,9 @@ The inspected [16 June job](https://github.com/ELION-DYNAMICS/mars-rover-prop-m-
 failed because `libgoogle-glog-dev` could not satisfy `libunwind-dev` / `libunwind7-dev`.
 The repair uses a clean `ros:humble-ros-base-jammy` container and explicitly installs
 `libunwind-dev`, avoiding dependency on the hosted image's development-package set.
-The exact prior package conflict and successful installation in the new container
-still require a live run; a static edit is not a verified resolution.
+The precise historical package conflict is not established by that log. A live
+repair-branch simulator run subsequently passed installation and dependency
+resolution in the new container; this is separate from runtime acceptance.
 
 The first repair-branch simulator run passed dependency installation and then
 reproduced a C++ build failure: Gazebo 11 has no `SurfaceParams::Bounce()` member.

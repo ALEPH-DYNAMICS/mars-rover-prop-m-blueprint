@@ -120,3 +120,8 @@ A separate Python job tests behavior, installed CLIs and Compose configuration.
 The simulator job builds all packages, observes the limited smoke subset, records
 actual evidence and runs explicit acceptance. Missing prerequisites and skipped
 steps remain failures/blocked checks, never successful simulation evidence.
+
+GitHub had automatically disabled the old scheduled simulation workflow for
+inactivity. The PR correctness workflow calls that same definition as a reusable
+job, so repair-commit simulation checks can run without re-enabling the dormant
+nightly schedule or duplicating its implementation.

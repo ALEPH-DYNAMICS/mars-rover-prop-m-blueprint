@@ -3,6 +3,9 @@ on: [push, pull_request]
 permissions:
   contents: read
 jobs:
+  simulator-evidence:
+    if: github.event_name == 'pull_request'
+    uses: ./.github/workflows/sim_regression.yml
   unit:
     runs-on: ubuntu-latest
     steps:

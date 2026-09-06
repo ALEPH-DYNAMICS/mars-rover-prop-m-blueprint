@@ -1,6 +1,7 @@
 name: Simulator evidence and acceptance (integration pending)
 
 on:
+  workflow_call:
   pull_request:
     branches: [ "main" ]
   workflow_dispatch:

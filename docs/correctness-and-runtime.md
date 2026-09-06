@@ -115,6 +115,12 @@ The repair uses a clean `ros:humble-ros-base-jammy` container and explicitly ins
 The exact prior package conflict and successful installation in the new container
 still require a live run; a static edit is not a verified resolution.
 
+The first repair-branch simulator run passed dependency installation and then
+reproduced a C++ build failure: Gazebo 11 has no `SurfaceParams::Bounce()` member.
+The plugin now sets its existing restitution value through Gazebo's Surface
+message API, preserving the other contact parameters. The core ROS package job
+also completed successfully at `e77f3a7`; final-SHA checks are reported separately.
+
 Core CI includes runtime dependencies but still skips building `rover_sim_gazebo`.
 A separate Python job tests behavior, installed CLIs and Compose configuration.
 The simulator job builds all packages, observes the limited smoke subset, records

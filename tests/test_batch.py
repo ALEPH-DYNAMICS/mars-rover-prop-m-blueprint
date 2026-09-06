@@ -4,6 +4,8 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
+import yaml
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,6 +15,25 @@ from rover_tools.schema_validate import validate_minimal
 
 
 class BatchTests(unittest.TestCase):
+    def test_estimator_covariances_are_ros_double_arrays(self):
+        for mode in ("modern", "prop_m"):
+            path = ROOT / f"ros_ws/src/rover_estimation/config/ekf_{mode}.yaml"
+            values = yaml.safe_load(path.read_text())["ekf_filter_node"]["ros__parameters"]["process_noise_covariance"]
+            self.assertEqual(len(values), 15 * 15)
+            self.assertTrue(all(type(value) is float for value in values))
+            self.assertTrue(all(values[i * 15 + i] > 0 for i in range(15)))
+
+    def test_world_terrain_uris_resolve_through_the_exported_model_path(self):
+        package = ROOT / "ros_ws/src/rover_sim_gazebo"
+        export = ET.parse(package / "package.xml").find("export/gazebo_ros")
+        model_root = Path(export.attrib["gazebo_model_path"].replace("${prefix}", str(package)))
+        for world in (package / "worlds").glob("*.sdf"):
+            for uri in ET.parse(world).findall(".//include/uri"):
+                if uri.text.startswith("model://regolith_"):
+                    model = model_root / uri.text.removeprefix("model://")
+                    self.assertTrue((model / "model.config").is_file(), str(model))
+                    ET.parse(model / "model.sdf")
+
     def config(self, mode="modern"):
         return batch.RunConfig("mars_flat", mode, "gazebo", 1, 73, False, True, ROOT / batch.DEFAULT_TOPICS_CFG)
 

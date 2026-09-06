@@ -191,8 +191,18 @@ class ControlTests(unittest.TestCase):
         self.assertEqual(self.shaper.step(cfg), (0, 0))
         self.shaper.slip_received(0); self.time = .1; self.assertGreater(self.shaper.step(cfg)[0], 0)
         self.time = .2; self.assertEqual(self.shaper.step(cfg), (0, 0))
-        for slip in (math.nan, math.inf, -1, 1.1): self.assertFalse(self.shaper.slip_received(slip))
+        for slip in (math.nan, math.inf, True, "0.1"): self.assertFalse(self.shaper.slip_received(slip))
         self.shaper.slip_received(.6); self.time = .3; self.assertEqual(self.shaper.step(cfg), (0, 0))
+
+    def test_signed_slip_preserves_the_documented_ratio_contract(self):
+        cfg = ShapingConfig(self.cfg.limits)
+        self.shaper.command_received(.2, .2)
+        self.assertTrue(self.shaper.slip_received(-.1))  # Documented braking slip.
+        self.time = .1
+        self.assertGreater(self.shaper.step(cfg)[0], 0)
+        self.assertTrue(self.shaper.slip_received(1.1))
+        self.time = .2
+        self.assertEqual(self.shaper.step(cfg), (0, 0))  # Above hard threshold.
 
     def test_pause_rate_and_clock_reset(self):
         self.shaper.command_received(.2, .2)

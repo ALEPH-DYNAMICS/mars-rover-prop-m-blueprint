@@ -78,7 +78,7 @@ class CommandShaper:
         return True
 
     def slip_received(self, value):
-        if not finite(value) or not 0 <= value <= 1:
+        if not finite(value):
             self.slip_time = None
             return False
         self.slip, self.slip_time = value, self.clock()

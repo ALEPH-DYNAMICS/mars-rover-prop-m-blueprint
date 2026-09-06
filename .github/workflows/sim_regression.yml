@@ -36,6 +36,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Trust this runner checkout for provenance reads
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
       - name: Install system dependencies (ROS + tools)
         shell: bash
         run: |
@@ -90,7 +93,7 @@ jobs:
         run: |
           source /opt/ros/${ROS_DISTRO}/setup.bash
           source ros_ws/install/setup.bash
-          export GAZEBO_MODEL_PATH="$PWD/ros_ws/src/rover_sim_gazebo/models:${GAZEBO_MODEL_PATH:-}"
+          export GAZEBO_MODEL_PATH="$PWD/ros_ws/src/rover_sim_gazebo/models/terrain:${GAZEBO_MODEL_PATH:-}"
           export GAZEBO_PLUGIN_PATH="$PWD/ros_ws/install/rover_sim_gazebo/lib:${GAZEBO_PLUGIN_PATH:-}"
           python3 scripts/sim_smoke.py --out analysis/sim-smoke.json
 
@@ -99,7 +102,7 @@ jobs:
         run: |
           source /opt/ros/${ROS_DISTRO}/setup.bash
           source ros_ws/install/setup.bash
-          export GAZEBO_MODEL_PATH="$PWD/ros_ws/src/rover_sim_gazebo/models:${GAZEBO_MODEL_PATH:-}"
+          export GAZEBO_MODEL_PATH="$PWD/ros_ws/src/rover_sim_gazebo/models/terrain:${GAZEBO_MODEL_PATH:-}"
           export GAZEBO_PLUGIN_PATH="$PWD/ros_ws/install/rover_sim_gazebo/lib:${GAZEBO_PLUGIN_PATH:-}"
           python3 scripts/run_sim_batch.py --backend gazebo --scenario "${SCENARIO}" \
             --seed "${SEED}" --duration "${RUN_SECONDS}" --runs 1 --no-nav2 --report analysis/regression-batch.json

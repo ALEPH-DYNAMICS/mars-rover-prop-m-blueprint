@@ -28,9 +28,11 @@ YAML; its `limits.*.<mode>` parameter names are the names consumed by control.
 Finite positive velocity/acceleration limits and timeouts are required; deadbands
 are finite and nonnegative. Invalid configuration inhibits output. Invalid commands
 are discarded and the output ramps toward zero using the existing acceleration bounds.
-When slip containment is enabled, absent, invalid, out-of-range or stale slip evidence
+When slip containment is enabled, absent, nonfinite or stale slip evidence
 also requests a ramp to zero. Slip age defaults to 0.5 simulated seconds and is configurable
 as `slip.timeout_s`; it is a simulation policy, not a certified stopping guarantee.
+Finite signed slip remains valid, including braking slip as defined in the existing
+terramechanics notes. The existing positive-slip thresholds are preserved.
 
 The node and phase runner use their ROS clocks, including `use_sim_time`. The pure
 shaper takes an injected clock: paused time does not advance ramps; backward time
@@ -121,6 +123,13 @@ reproduced a C++ build failure: Gazebo 11 has no `SurfaceParams::Bounce()` membe
 The plugin now sets its existing restitution value through Gazebo's Surface
 message API, preserving the other contact parameters. The core ROS package job
 also completed successfully at `e77f3a7`; final-SHA checks are reported separately.
+
+At `6075a7c`, all 11 packages built and the limited smoke observed 10 clock samples,
+2 mission labels and 18 finite command samples. Its logs still showed an EKF YAML
+parse error and failed terrain/spawn loading; batch packaging then rejected missing
+Git provenance. The follow-up uses uniform floating-point covariance entries,
+exports the installed terrain model path, and trusts only the runner's own checkout
+for Git reads. These fixes do not establish actuation or acceptance.
 
 Core CI includes runtime dependencies but still skips building `rover_sim_gazebo`.
 A separate Python job tests behavior, installed CLIs and Compose configuration.

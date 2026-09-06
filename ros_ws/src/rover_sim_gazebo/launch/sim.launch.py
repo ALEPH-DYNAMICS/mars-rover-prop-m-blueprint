@@ -14,12 +14,14 @@ def generate_launch_description():
     world_path = PathJoinSubstitution([pkg, "worlds", world])
 
     return LaunchDescription([
+        DeclareLaunchArgument("seed", default_value="0"),
+        DeclareLaunchArgument("gui", default_value="false"),
         DeclareLaunchArgument("world", default_value="mars_flat.sdf",
                              description="World file inside rover_sim_gazebo/worlds/"),
 
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(gazebo_launch),
-            launch_arguments={"world": world_path}.items(),
+            launch_arguments={"world": world_path, "seed": LaunchConfiguration("seed"), "gui": LaunchConfiguration("gui"), "server_required": "true"}.items(),
         ),
 
         IncludeLaunchDescription(

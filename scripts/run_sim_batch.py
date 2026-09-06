@@ -4,7 +4,7 @@ scripts/run_sim_batch.py
 
 Batch runner for simulation scenarios.
 
-This script launches repeatable simulation runs for a given scenario and mode,
+This script launches best-effort simulation runs for a given scenario and mode,
 records bags, packages datasets, and optionally evaluates metrics.
 
 It is intentionally strict:
@@ -26,7 +26,7 @@ Requires:
 
 NOTE:
 This runner does not assume your full bringup.launch exists yet.
-It launches simulator + (optional) Nav2 + (optional) mission in separate processes.
+It launches the common simulation bringup and optional Nav2; the bringup controls phase-label publication.
 As the program matures, replace these launch calls with a single bringup.
 
 Phase 0 default:
@@ -49,9 +49,17 @@ import signal
 import subprocess
 import sys
 import time
+import tempfile
+import math
+import hashlib
+import xml.etree.ElementTree as ET
+import yaml
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ros_ws/src/rover_tools"))
+from rover_tools.dataset_package import package_dataset as validated_package_dataset
 
 # Repo-relative defaults
 DEFAULT_TOPICS_CFG = "ros_ws/src/rover_tools/config/record_topics_minimal.yaml"
@@ -82,15 +90,17 @@ def now_utc_compact() -> str:
 
 
 def run(cmd: List[str], *, env: Optional[Dict[str, str]] = None, cwd: Optional[Path] = None) -> subprocess.Popen:
-    return subprocess.Popen(
-        cmd,
-        cwd=str(cwd) if cwd else None,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        preexec_fn=os.setsid,  # so we can kill the entire process group
-    )
+    # File-backed output cannot fill a pipe while the simulation is running.
+    log = tempfile.TemporaryFile(mode="w+")
+    try:
+        process = subprocess.Popen(cmd, cwd=str(cwd) if cwd else None, env=env,
+                                   stdout=log, stderr=subprocess.STDOUT, text=True,
+                                   start_new_session=True)
+    except Exception:
+        log.close()
+        raise
+    process.run_log = log
+    return process
 
 
 def kill_proc_group(p: subprocess.Popen, timeout_s: float = 10.0) -> None:
@@ -114,17 +124,12 @@ def kill_proc_group(p: subprocess.Popen, timeout_s: float = 10.0) -> None:
 
 
 def drain_output(p: subprocess.Popen, max_lines: int = 200) -> List[str]:
-    lines: List[str] = []
-    if not p.stdout:
-        return lines
-    try:
-        for _ in range(max_lines):
-            line = p.stdout.readline()
-            if not line:
-                break
-            lines.append(line.rstrip())
-    except Exception:
-        pass
+    log = getattr(p, "run_log", None)
+    if log is None:
+        return []
+    log.seek(0)
+    lines = log.read().splitlines()[-max_lines:]
+    log.close()
     return lines
 
 
@@ -187,36 +192,9 @@ def load_scenario(repo_root: Path, scenario_name: str) -> Dict[str, Any]:
     if not scenario_path.exists():
         raise FileNotFoundError(f"scenario.yaml not found: {scenario_path}")
 
-    # Minimal YAML reader: we only need a few keys. For Phase 0, parse line-based.
-    # If you want full YAML, add PyYAML and do it properly.
-    txt = scenario_path.read_text(encoding="utf-8").splitlines()
-
-    def get_value(key: str) -> Optional[str]:
-        for ln in txt:
-            if ln.strip().startswith(f"{key}:"):
-                return ln.split(":", 1)[1].strip().strip('"')
-        return None
-
-    # Shallow extraction; world file is nested under defaults/world_gazebo
-    world_gazebo = None
-    in_defaults = False
-    for ln in txt:
-        s = ln.rstrip()
-        if s.strip() == "defaults:":
-            in_defaults = True
-            continue
-        if in_defaults:
-            if s and not s.startswith(" "):  # left indent ended
-                in_defaults = False
-            if "world_gazebo:" in s:
-                world_gazebo = s.split("world_gazebo:", 1)[1].strip()
-
-    return {
-        "name": get_value("name") or scenario_name,
-        "version": get_value("version") or "unknown",
-        "world_gazebo": world_gazebo,
-        "scenario_path": str(scenario_path),
-    }
+    data = yaml.safe_load(scenario_path.read_text())
+    return {"name": data["name"], "version": data.get("version", "unknown"),
+            "world_gazebo": data["defaults"]["world_gazebo"], "scenario_path": str(scenario_path)}
 
 
 # -----------------------------
@@ -227,26 +205,24 @@ def record_bag(out_dir: Path, topics: List[str], duration_s: float) -> Path:
     """
     Record MCAP using ros2 bag record. Returns MCAP path.
     """
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    # ros2 bag record writes <out>_0.mcap etc.
-    cmd = ["ros2", "bag", "record", "--storage", "mcap", "-o", str(out_dir)]
-    cmd += topics
-
+    if out_dir.exists():
+        raise FileExistsError(out_dir)
+    out_dir.parent.mkdir(parents=True, exist_ok=True)
+    cmd = ["ros2", "bag", "record", "--use-sim-time", "--storage", "mcap", "-o", str(out_dir)] + topics
     p = run(cmd)
-    time.sleep(max(0.5, min(2.0, duration_s * 0.1)))  # allow writer to start
-
-    time.sleep(duration_s)
-    kill_proc_group(p, timeout_s=10.0)
-
-    # Find produced mcap
-    mcaps = sorted(out_dir.parent.glob(out_dir.name + "_*.mcap"))
-    if not mcaps:
-        # Some distros may write under out_dir directly; check any .mcap
-        mcaps = sorted(out_dir.parent.glob("*.mcap"))
-    if not mcaps:
-        raise RuntimeError(f"no .mcap produced under {out_dir.parent}")
-    return mcaps[-1]
+    try:
+        # This bounds recording in wall seconds, not deterministic simulation steps.
+        time.sleep(duration_s)
+        if p.poll() is not None:
+            raise RuntimeError(f"bag recorder exited early ({p.returncode})")
+    finally:
+        kill_proc_group(p, timeout_s=10.0)
+        logs = drain_output(p)
+        (out_dir.parent / "recorder.log").write_text("\n".join(logs))
+    mcaps = sorted(out_dir.glob("*.mcap"))
+    if len(mcaps) != 1:
+        raise RuntimeError(f"Expected one MCAP in {out_dir}; found {len(mcaps)} (split bags unsupported)")
+    return mcaps[0]
 
 
 # -----------------------------
@@ -254,16 +230,7 @@ def record_bag(out_dir: Path, topics: List[str], duration_s: float) -> Path:
 # -----------------------------
 
 def package_dataset(repo_root: Path, run_id: str, mcap_path: Path, run_metadata: Dict[str, Any]) -> Path:
-    target = repo_root / DATASETS_DIR / run_id
-    if target.exists():
-        raise FileExistsError(f"dataset already exists: {target}")
-
-    target.mkdir(parents=True, exist_ok=False)
-    (target / "run.mcap").write_bytes(mcap_path.read_bytes())
-    write_json(target / "run_metadata.json", run_metadata)
-
-    # Do not compute hashes here; your rover_tools does that. Phase 0: keep minimal and honest.
-    return target
+    return validated_package_dataset(repo_root, run_id, mcap_path, run_metadata)
 
 
 # -----------------------------
@@ -282,9 +249,10 @@ class RunConfig:
     topics_cfg: Path
 
 
-def launch_gazebo_world(repo_root: Path, world_file: str) -> subprocess.Popen:
-    # world file expected inside rover_sim_gazebo/worlds
-    cmd = ["ros2", "launch", "rover_sim_gazebo", "sim.launch.py", f"world:={Path(world_file).name}"]
+def launch_gazebo_world(repo_root: Path, world_file: str, cfg: RunConfig, seed: int) -> subprocess.Popen:
+    cmd = ["ros2", "launch", "rover_bringup", "sim_bringup.launch.py",
+           f"world:={Path(world_file).name}", f"mode:={cfg.mode}", f"seed:={seed}",
+           f"start_mission:={str(cfg.start_mission).lower()}", "gui:=false"]
     return run(cmd, cwd=repo_root)
 
 
@@ -293,53 +261,32 @@ def launch_nav2(repo_root: Path, mode: str) -> subprocess.Popen:
     return run(cmd, cwd=repo_root)
 
 
-def launch_mission(repo_root: Path, mode: str, scenario: str) -> subprocess.Popen:
-    # Placeholder: use your future BT runner launch. For now, attempt a generic entry.
-    # If rover_mission_bt launch doesn't exist yet, this will fail and be recorded.
-    cmd = ["ros2", "launch", "rover_mission_bt", "mission.launch.py", f"mode:={mode}", f"scenario:={scenario}"]
-    return run(cmd, cwd=repo_root)
-
-
 # -----------------------------
 # Run metadata
 # -----------------------------
 
 def build_run_metadata(repo_root: Path, cfg: RunConfig, scenario_info: Dict[str, Any], topics: List[str]) -> Dict[str, Any]:
-    commit = git_short_hash(repo_root)
-    dirty = git_dirty(repo_root)
-
+    world = repo_root / "ros_ws/src/rover_sim_gazebo/worlds" / Path(scenario_info["world_gazebo"]).name
+    physics = ET.parse(world).getroot().find("world/physics")
+    urdf = repo_root / "ros_ws/src/rover_description/urdf/rover.urdf.xacro"
     return {
-        "schema_version": "0.1",
-        "run_id": "",  # filled by caller
+        "schema_version": "0.1", "run_id": "",  # caller assigns the run ID
         "created_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "mode": "simulation",
-        "backend": cfg.backend,
-        "scenario": cfg.scenario,
-        "seed": int(cfg.seed),
-        "git": {
-            "commit": commit,
-            "dirty": bool(dirty),
-        },
-        "clock": {
-            "use_sim_time": True,
-        },
-        "physics": {
-            "notes": "Mars gravity expected; see scenario world.",
-        },
-        "robot": {
-            "variant": "prop-m-blueprint",
-        },
-        "params": {
-            "mode_profile": cfg.mode,
-            "scenario_yaml": scenario_info.get("scenario_path", ""),
-        },
-        "topics": {
-            "recorded": topics,
-        },
-        "artifacts": {
-            "bag": "run.mcap",
-            "metrics": "metrics.json",
-        },
+        "mode": "simulation", "backend": cfg.backend, "scenario": cfg.scenario, "seed": cfg.seed,
+        "git": {"commit": git_short_hash(repo_root), "dirty": git_dirty(repo_root)},
+        "clock": {"use_sim_time": True, "time_source": "sim_clock"},
+        "physics": {"engine": physics.attrib["type"], "time_step_s": float(physics.findtext("max_step_size")),
+                    "real_time_factor": float(physics.findtext("real_time_factor")), "deterministic": None},
+        "robot": {"name": "rover", "base_frame": "base_link", "urdf_sha256": hashlib.sha256(urdf.read_bytes()).hexdigest()},
+        "params": {"control_config": f"ros_ws/src/rover_bringup/params/modes/{cfg.mode}.yaml",
+                   "estimator_config": f"ros_ws/src/rover_estimation/config/ekf_{cfg.mode}.yaml",
+                   "terramechanics_config": "ros_ws/src/rover_sim_gazebo/config/terrain_presets.yaml",
+                   "nav2_profile": f"ros_ws/src/rover_navigation/params/nav2_{cfg.mode}.yaml" if cfg.start_nav2 else None},
+        "topics": {"recorded": topics}, "artifacts": {"mcap": "run.mcap", "metrics_json": None},
+        "notes": "Configuration provenance, not measured dynamics: physics values are read from the selected world XML; "
+                 "urdf_sha256 hashes the root Xacro source, not its expanded model/includes. "
+                 "Seed is forwarded to Gazebo gzserver; no stochastic RNG is used by the phase runner/control shaper. "
+                 "Nav2 has no seed wiring here. Recording duration is wall time; determinism and motion are unverified.",
     }
 
 
@@ -353,15 +300,20 @@ def main() -> None:
     ap.add_argument("--mode", default="modern", choices=["modern", "prop_m"], help="Mode profile")
     ap.add_argument("--backend", default="gazebo", choices=["gazebo"], help="Simulation backend (Phase 0: gazebo only)")
     ap.add_argument("--runs", type=int, default=3, help="Number of runs")
-    ap.add_argument("--duration", type=float, default=30.0, help="Record duration per run (seconds)")
+    ap.add_argument("--duration", type=float, default=30.0, help="Record duration per run (wall-clock seconds)")
     ap.add_argument("--seed", type=int, default=0, help="Base seed (incremented per run)")
     ap.add_argument("--topics-cfg", default=DEFAULT_TOPICS_CFG, help="YAML with topic list for recording")
     ap.add_argument("--no-nav2", action="store_true", help="Do not launch Nav2")
     ap.add_argument("--no-mission", action="store_true", help="Do not launch mission BT")
+    ap.add_argument("--report", type=Path, help="Exact batch-report output path for downstream evaluation")
     ap.add_argument("--evaluate-metrics", action="store_true", help="Run scripts/evaluate_metrics.py after packaging")
 
     args = ap.parse_args()
 
+    if args.runs < 1 or args.seed < 0 or not math.isfinite(args.duration) or args.duration <= 0:
+        ap.error("runs must be positive, seed nonnegative, duration finite and positive")
+    if Path(args.scenario).name != args.scenario or args.scenario in (".", ".."):
+        ap.error("scenario must name a directory directly under scenarios")
     repo_root = Path(__file__).resolve().parents[1]
     cfg = RunConfig(
         scenario=args.scenario,
@@ -413,7 +365,7 @@ def main() -> None:
 
         try:
             # Launch simulator
-            p_gz = launch_gazebo_world(repo_root, world_file)
+            p_gz = launch_gazebo_world(repo_root, world_file, cfg, run_seed)
             time.sleep(5.0)  # allow gazebo to come up
 
             # Launch Nav2
@@ -421,18 +373,23 @@ def main() -> None:
                 p_nav2 = launch_nav2(repo_root, cfg.mode)
                 time.sleep(3.0)
 
-            # Launch mission (optional; may not exist yet)
-            if cfg.start_mission:
-                p_mission = launch_mission(repo_root, cfg.mode, cfg.scenario)
-                time.sleep(2.0)
+            for name, process in (("bringup", p_gz), ("nav2", p_nav2)):
+                if process is not None and process.poll() is not None:
+                    raise RuntimeError(f"{name} exited before recording ({process.returncode})")
 
             # Record bag
             tmp_bag_base = repo_root / "analysis" / "batch_tmp" / run_id / "bag"
             tmp_bag_base.parent.mkdir(parents=True, exist_ok=True)
             mcap = record_bag(tmp_bag_base, topics, cfg.duration_s)
 
+            for name, process in (("bringup", p_gz), ("nav2", p_nav2)):
+                if process is not None and process.poll() is not None:
+                    raise RuntimeError(f"{name} exited during recording ({process.returncode})")
+
             # Package dataset
-            meta = build_run_metadata(repo_root, cfg, scenario_info, topics)
+            bag_info = yaml.safe_load((mcap.parent / "metadata.yaml").read_text())["rosbag2_bagfile_information"]
+            recorded = [item["topic_metadata"]["name"] for item in bag_info["topics_with_message_count"] if item["message_count"] > 0]
+            meta = build_run_metadata(repo_root, cfg, scenario_info, recorded)
             meta["run_id"] = run_id
             meta["seed"] = int(run_seed)
 
@@ -461,28 +418,20 @@ def main() -> None:
             diagnostics["notes"].append(str(e))
 
         finally:
-            # Drain some logs for post-mortem
-            if p_mission:
-                diagnostics["logs"]["mission_tail"] = drain_output(p_mission)
-            if p_nav2:
-                diagnostics["logs"]["nav2_tail"] = drain_output(p_nav2)
-            if p_gz:
-                diagnostics["logs"]["gazebo_tail"] = drain_output(p_gz)
-
-            # Stop processes
-            if p_mission:
-                kill_proc_group(p_mission)
-            if p_nav2:
-                kill_proc_group(p_nav2)
-            if p_gz:
-                kill_proc_group(p_gz)
+            for name, process in (("mission", p_mission), ("nav2", p_nav2), ("gazebo", p_gz)):
+                if process is not None:
+                    kill_proc_group(process)
+                    diagnostics["logs"][name + "_tail"] = drain_output(process)
 
         batch_report["runs"].append(diagnostics)
 
     # Write batch report
     out = repo_root / "analysis" / "batch_reports" / f"batch_{now_utc_compact()}_{cfg.scenario}_{cfg.mode}.json"
+    out = args.report.resolve() if args.report else out
     write_json(out, batch_report)
     print(str(out))
+    if any(run["status"] != "ok" for run in batch_report["runs"]):
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

@@ -7,5 +7,7 @@
       max_tether_radius_m: 15.0
 
     limits:
-      v_max_mps: 0.05
-      omega_max_rps: 0.30
+      v_max_mps:
+        prop_m: 0.05
+      omega_max_rps:
+        prop_m: 0.30

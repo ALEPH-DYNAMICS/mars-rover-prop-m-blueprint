@@ -1,49 +1,62 @@
 from __future__ import annotations
-
+import copy
+import hashlib
 import json
+import os
+import re
 import shutil
+import tempfile
 from pathlib import Path
-from typing import Any, Dict, Optional
-
 from .utils import sha256_file, write_json
-from .schema_validate import main_validate
+from .schema_validate import validate_minimal
 
 
-def package_dataset(
-    repo_root: Path,
-    run_id: str,
-    bag_file: Path,
-    run_metadata: Dict[str, Any],
-    *,
-    plots_dir: Optional[Path] = None,
-) -> Path:
-    datasets_dir = repo_root / "datasets"
-    target_dir = datasets_dir / run_id
-    target_dir.mkdir(parents=True, exist_ok=False)
+def metadata_digest(meta):
+    """Hash sorted compact ASCII-escaped UTF-8 JSON, excluding the hash itself.
 
-    # Copy bag
-    target_bag = target_dir / "run.mcap"
-    shutil.copy2(bag_file, target_bag)
+    This is a canonical payload hash, never the hash of saved file bytes.
+    """
+    payload = copy.deepcopy(meta)
+    payload.get("integrity", {}).pop("metadata_sha256", None)
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"),
+                         ensure_ascii=True, allow_nan=False).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
-    # Write metadata
-    meta_path = target_dir / "run_metadata.json"
-    write_json(meta_path, run_metadata)
 
-    ok, reasons = main_validate(meta_path)
+def package_dataset(repo_root, run_id, bag_file, run_metadata, *, plots_dir=None):
+    if not isinstance(run_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{7,}", run_id):
+        raise ValueError("run_id must be a simple filename identifier of at least 8 characters")
+    ok, reasons = validate_minimal(run_metadata)
     if not ok:
-        # Hard fail: invalid dataset is not allowed
-        raise ValueError("run_metadata.json failed validation:\n- " + "\n- ".join(reasons))
-
-    # Optional plots
-    if plots_dir and plots_dir.exists():
-        shutil.copytree(plots_dir, target_dir / "plots", dirs_exist_ok=True)
-
-    # Integrity hashes
-    # Update metadata file with hashes (append-only update)
-    meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    meta.setdefault("integrity", {})
-    meta["integrity"]["mcap_sha256"] = sha256_file(target_bag)
-    meta["integrity"]["metadata_sha256"] = sha256_file(meta_path)
-    write_json(meta_path, meta)
-
-    return target_dir
+        raise ValueError("run_metadata.json failed validation: " + "; ".join(reasons))
+    if run_metadata["run_id"] != run_id:
+        raise ValueError("run_id must match metadata")
+    if run_metadata["artifacts"]["mcap"] != "run.mcap":
+        raise ValueError("Packaged MCAP artifact must be run.mcap")
+    if not Path(bag_file).is_file():
+        raise FileNotFoundError(bag_file)
+    datasets = Path(repo_root) / "datasets"
+    target = datasets / run_id
+    if target.exists():
+        raise FileExistsError(target)
+    datasets.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=".packaging-", dir=datasets))
+    try:
+        shutil.copy2(bag_file, staging / "run.mcap")
+        if plots_dir is not None:
+            shutil.copytree(plots_dir, staging / "plots")
+        meta = copy.deepcopy(run_metadata)
+        meta.setdefault("integrity", {})["mcap_sha256"] = sha256_file(staging / "run.mcap")
+        meta["integrity"]["metadata_sha256"] = metadata_digest(meta)
+        write_json(staging / "run_metadata.json", meta)
+        saved = json.loads((staging / "run_metadata.json").read_text())
+        ok, reasons = validate_minimal(saved)
+        if not ok or metadata_digest(saved) != saved["integrity"]["metadata_sha256"]:
+            raise ValueError(f"Packaged metadata readback failed: {reasons}")
+        if target.exists():
+            raise FileExistsError(target)
+        os.rename(staging, target)
+        return target
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging)

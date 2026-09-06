@@ -3,6 +3,7 @@ from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.actions import Node
+from launch.conditions import IfCondition
 from launch_ros.substitutions import FindPackageShare
 
 def generate_launch_description():
@@ -18,6 +19,7 @@ def generate_launch_description():
     common_params = PathJoinSubstitution([bringup_pkg, "params", "common.yaml"])
     modern_params = PathJoinSubstitution([bringup_pkg, "params", "modes", "modern.yaml"])
     prop_params = PathJoinSubstitution([bringup_pkg, "params", "modes", "prop_m.yaml"])
+    mode_params = PythonExpression(['"', prop_params, '" if "', mode, '" == "prop_m" else "', modern_params, '"'])
     description_launch = PathJoinSubstitution([description_pkg, "launch", "description.launch.py"])
     estimation_launch = PathJoinSubstitution([estimation_pkg, "launch", "ekf.launch.py"])
     sim_launch = PathJoinSubstitution([sim_pkg, "launch", "sim.launch.py"])
@@ -29,13 +31,18 @@ def generate_launch_description():
     ])
 
     return LaunchDescription([
-        DeclareLaunchArgument("mode", default_value="modern"),
+        DeclareLaunchArgument("mode", default_value="modern", choices=["modern", "prop_m"]),
         DeclareLaunchArgument("world", default_value="mars_flat.sdf"),
+        DeclareLaunchArgument("seed", default_value="0"),
+        DeclareLaunchArgument("gui", default_value="false"),
+        DeclareLaunchArgument("start_mission", default_value="true"),
 
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(sim_launch),
             launch_arguments={
                 "world": world,
+                "seed": LaunchConfiguration("seed"),
+                "gui": LaunchConfiguration("gui"),
             }.items()
         ),
 
@@ -59,18 +66,18 @@ def generate_launch_description():
             executable="rover_control_node",
             name="rover_control",
             output="screen",
-            parameters=[common_params, modern_params, prop_params, {"use_sim_time": True}],
+            parameters=[common_params, mode_params, {"use_sim_time": True}],
         ),
 
         Node(
             package="rover_mission_bt",
+            condition=IfCondition(LaunchConfiguration("start_mission")),
             executable="rover_mission_bt_node",
             name="rover_mission_bt",
             output="screen",
             parameters=[
                 common_params,
-                modern_params,
-                prop_params,
+                mode_params,
                 {
                     "use_sim_time": True,
                     "tree_file": tree_file,

@@ -3,6 +3,7 @@
 #include <gazebo/physics/Link.hh>
 #include <gazebo/physics/Collision.hh>
 #include <gazebo/common/Console.hh>
+#include <gazebo/msgs/msgs.hh>
 
 namespace rover_sim_gazebo
 {
@@ -77,14 +78,17 @@ void TerrainPresetPlugin::ApplyFriction(gazebo::physics::ModelPtr model,
 
     // ODE friction parameters
     auto fric = surf->FrictionPyramid();
-    fric->SetMuPrimary(mu);
-    fric->SetMuSecondary(mu2);
-
-    // Restitution (bounce) if available
-    auto bounce = surf->Bounce();
-    if (bounce) {
-      bounce->SetRestitutionCoefficient(restitution);
+    if (fric) {
+      fric->SetMuPrimary(mu);
+      fric->SetMuSecondary(mu2);
     }
+
+    // Gazebo 11 exposes restitution through its Surface message API.
+    // Round-trip the existing surface so other contact parameters are preserved.
+    gazebo::msgs::Surface surface_msg;
+    surf->FillMsg(surface_msg);
+    surface_msg.set_restitution_coefficient(restitution);
+    surf->ProcessMsg(surface_msg);
   }
 }
 

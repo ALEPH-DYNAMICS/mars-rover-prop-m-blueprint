@@ -1,44 +1,26 @@
-from __future__ import annotations
+"""Canonical Draft 2020-12 validation, including RFC3339 timestamps.
 
+The datasets/schemas path links to this installed resource: one schema in both
+source checkouts and wheel installations. validate_minimal keeps its API name.
+"""
 import json
+from importlib.resources import files
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from jsonschema import Draft202012Validator, FormatChecker
 
 
-REQUIRED_TOP_LEVEL = [
-    "schema_version",
-    "run_id",
-    "created_utc",
-    "mode",
-    "backend",
-    "scenario",
-    "seed",
-    "git",
-    "clock",
-    "physics",
-    "robot",
-    "params",
-    "topics",
-    "artifacts",
-]
+def validate_minimal(meta):
+    try:
+        json.dumps(meta, allow_nan=False)
+    except (ValueError, TypeError) as error:
+        return False, [f"Metadata must be finite JSON: {error}"]
+    schema = json.loads(files("rover_tools").joinpath("run_metadata.schema.json").read_text())
+    Draft202012Validator.check_schema(schema)
+    validator = Draft202012Validator(schema, format_checker=FormatChecker())
+    reasons = [f"{'/'.join(map(str, error.absolute_path)) or '/'}: {error.message}"
+               for error in sorted(validator.iter_errors(meta), key=lambda e: str(list(e.absolute_path)))]
+    return not reasons, reasons
 
 
-def validate_minimal(meta: Dict[str, Any]) -> Tuple[bool, List[str]]:
-    reasons: List[str] = []
-    for k in REQUIRED_TOP_LEVEL:
-        if k not in meta:
-            reasons.append(f"missing required key: {k}")
-    if "mode" in meta and meta["mode"] not in ("simulation", "hardware"):
-        reasons.append("mode must be 'simulation' or 'hardware'")
-    if "backend" in meta and meta["backend"] not in ("gazebo", "webots", "pybullet", "hardware"):
-        reasons.append("backend must be gazebo|webots|pybullet|hardware")
-    if "seed" in meta and not isinstance(meta["seed"], int):
-        reasons.append("seed must be integer")
-    if "topics" in meta and "recorded" in meta.get("topics", {}) and not meta["topics"]["recorded"]:
-        reasons.append("topics.recorded must be non-empty")
-    return (len(reasons) == 0), reasons
-
-
-def main_validate(metadata_path: Path) -> Tuple[bool, List[str]]:
-    meta = json.loads(metadata_path.read_text(encoding="utf-8"))
-    return validate_minimal(meta)
+def main_validate(metadata_path: Path):
+    return validate_minimal(json.loads(metadata_path.read_text(encoding="utf-8")))

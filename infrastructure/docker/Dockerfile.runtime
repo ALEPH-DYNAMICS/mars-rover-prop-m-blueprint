@@ -27,6 +27,6 @@ RUN useradd -ms /bin/bash ros && echo "ros ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoe
 USER ros
 
 WORKDIR /workspaces/mars-rover-prop-m-blueprint
-COPY infrastructure/docker/scripts/entrypoint_ros.sh /entrypoint_ros.sh
+COPY --chmod=755 infrastructure/docker/scripts/entrypoint_ros.sh /entrypoint_ros.sh
 ENTRYPOINT ["/entrypoint_ros.sh"]
 CMD ["bash"]

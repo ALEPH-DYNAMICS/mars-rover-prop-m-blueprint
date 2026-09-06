@@ -1,0 +1,23 @@
+name: Python correctness and packaging
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  simulator-evidence:
+    if: github.event_name == 'pull_request'
+    uses: ./.github/workflows/sim_regression.yml
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements-test.txt ./ros_ws/src/rover_tools ./ros_ws/src/rover_control
+      - run: python -m unittest discover -s tests -v
+      - run: python scripts/run_sim_batch.py --help && python scripts/evaluate_metrics.py --help
+      - name: Installed CLIs outside source
+        working-directory: /tmp
+        run: rover_metrics --help && rover_tools metrics --help
+      - name: Compose configuration
+        run: docker compose -f infrastructure/docker/docker-compose.yml config --quiet
